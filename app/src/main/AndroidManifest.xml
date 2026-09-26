@@ -11,7 +11,7 @@
         android:theme="@style/Theme.VisionPulse">
 
         <activity
-            android:name=".MainActivity"
+            android:name=".DashboardActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
