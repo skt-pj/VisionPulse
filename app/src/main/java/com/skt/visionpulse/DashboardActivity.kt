@@ -560,7 +560,7 @@ private fun ObjectCard(
             Spacer(Modifier.height(13.dp))
 
             LinearProgressIndicator(
-                progress = { item.continuity.toFloat().coerceIn(0f, 1f) },
+                progress = item.continuity.toFloat().coerceIn(0f, 1f),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(5.dp),
