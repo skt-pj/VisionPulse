@@ -23,15 +23,10 @@ import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.WindowManager;
-
 import androidx.annotation.Nullable;
-
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -41,13 +36,11 @@ public final class CaptureService extends Service {
     public static final String ACTION_STOP = "com.skt.visionpulse.STOP_CAPTURE";
     public static final String EXTRA_RESULT_CODE = "resultCode";
     public static final String EXTRA_DATA = "data";
-
     private static final String CHANNEL_ID = "visionpulse_capture";
     private static final int NOTIFICATION_ID = 2601;
 
     private final AtomicBoolean processing = new AtomicBoolean(false);
     private final ExecutorService inferenceExecutor = Executors.newSingleThreadExecutor();
-    private final Map<Integer, LabelStats> cumulativeStats = new HashMap<>();
     private final Handler mainHandler = new Handler(android.os.Looper.getMainLooper());
 
     private HandlerThread captureThread;
@@ -58,12 +51,15 @@ public final class CaptureService extends Service {
     private YoloDetector detector;
     private WindowManager windowManager;
     private DetectionOverlayView overlayView;
+    private SessionAnalytics analytics;
     private int captureWidth;
     private int captureHeight;
     private long frameCount;
     private long fpsWindowStartNs;
     private int fpsWindowFrames;
     private double lastFps;
+    private boolean sessionStarted;
+    private boolean finalSnapshotSaved;
 
     @Override
     public void onCreate() {
@@ -78,12 +74,11 @@ public final class CaptureService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) return START_NOT_STICKY;
-        String action = intent.getAction();
-        if (ACTION_STOP.equals(action)) {
+        if (ACTION_STOP.equals(intent.getAction())) {
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (!ACTION_START.equals(action)) return START_NOT_STICKY;
+        if (!ACTION_START.equals(intent.getAction())) return START_NOT_STICKY;
 
         if (!Settings.canDrawOverlays(this)) {
             publishError("オーバーレイ権限がありません");
@@ -97,7 +92,6 @@ public final class CaptureService extends Service {
         if (Build.VERSION.SDK_INT >= 33) {
             data = intent.getParcelableExtra(EXTRA_DATA, Intent.class);
         } else {
-            //noinspection deprecation
             data = intent.getParcelableExtra(EXTRA_DATA);
         }
         if (resultCode != Activity.RESULT_OK || data == null) {
@@ -106,7 +100,7 @@ public final class CaptureService extends Service {
             return START_NOT_STICKY;
         }
 
-        final Intent projectionData = new Intent(data);
+        Intent projectionData = new Intent(data);
         inferenceExecutor.execute(() -> {
             try {
                 detector = new YoloDetector(getApplicationContext());
@@ -133,27 +127,18 @@ public final class CaptureService extends Service {
             DisplayMetrics metrics = getResources().getDisplayMetrics();
             captureWidth = metrics.widthPixels;
             captureHeight = metrics.heightPixels;
-            int density = metrics.densityDpi;
-
             imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 2);
             imageReader.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
             virtualDisplay = projection.createVirtualDisplay(
-                    "VisionPulseScreen",
-                    captureWidth,
-                    captureHeight,
-                    density,
+                    "VisionPulseScreen", captureWidth, captureHeight, metrics.densityDpi,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    imageReader.getSurface(),
-                    null,
-                    captureHandler
-            );
+                    imageReader.getSurface(), null, captureHandler);
 
-            mainHandler.post(this::showOverlay);
+            analytics = new SessionAnalytics();
+            sessionStarted = true;
             DetectionStore.setRunning(true);
-            DetectionStore.publish(new DetectionStore.DetectionSnapshot(
-                    "ライブ検出中", 0, DetectionStore.getInputSize(), 0, 0,
-                    0, 0, 0, 0, null, new ArrayList<>()
-            ));
+            mainHandler.post(this::showOverlay);
+            publishSnapshot("ライブ検出中", null);
             updateNotification("ライブ検出中");
         } catch (Exception e) {
             publishError("画面キャプチャ開始失敗: " + e.getClass().getSimpleName());
@@ -168,15 +153,12 @@ public final class CaptureService extends Service {
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
-                Build.VERSION.SDK_INT >= 26
-                        ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                        : WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                         | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT
-        );
+                PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.START;
         windowManager.addView(overlayView, params);
     }
@@ -186,6 +168,7 @@ public final class CaptureService extends Service {
         if (image == null) return;
         if (!processing.compareAndSet(false, true)) {
             image.close();
+            if (analytics != null) analytics.recordDroppedFrame();
             return;
         }
 
@@ -205,18 +188,14 @@ public final class CaptureService extends Service {
                 int inputSize = DetectionStore.getInputSize();
                 float threshold = DetectionStore.getConfidenceThreshold();
                 YoloDetector.Result result = detector.detect(frame, inputSize, threshold);
-                updateStats(inputSize, result);
+                updateRuntime(result);
+
                 List<YoloDetector.Detection> overlayDetections = new ArrayList<>(result.detections);
                 mainHandler.post(() -> {
                     if (overlayView != null) {
                         overlayView.updateDetections(
-                                overlayDetections,
-                                captureWidth,
-                                captureHeight,
-                                lastFps,
-                                result.inferenceMs,
-                                inputSize
-                        );
+                                overlayDetections, captureWidth, captureHeight,
+                                lastFps, result.inferenceMs, inputSize);
                     }
                 });
             } catch (Throwable t) {
@@ -228,7 +207,7 @@ public final class CaptureService extends Service {
         });
     }
 
-    private void updateStats(int inputSize, YoloDetector.Result result) {
+    private void updateRuntime(YoloDetector.Result result) {
         frameCount++;
         fpsWindowFrames++;
         long now = System.nanoTime();
@@ -239,41 +218,34 @@ public final class CaptureService extends Service {
             fpsWindowStartNs = now;
         }
 
-        int[] currentCounts = new int[CocoLabels.NAMES.length];
-        for (YoloDetector.Detection detection : result.detections) {
-            currentCounts[detection.classId]++;
-            LabelStats stats = cumulativeStats.computeIfAbsent(detection.classId, key -> new LabelStats());
-            stats.totalCount++;
-            stats.confidenceSum += detection.confidence;
-            stats.maxConfidence = Math.max(stats.maxConfidence, detection.confidence);
-        }
-
-        List<DetectionStore.LabelMetric> metrics = new ArrayList<>();
-        for (int classId = 0; classId < CocoLabels.NAMES.length; classId++) {
-            LabelStats stats = cumulativeStats.get(classId);
-            if (stats == null && currentCounts[classId] == 0) continue;
-            long total = stats == null ? 0 : stats.totalCount;
-            double average = stats == null || total == 0 ? 0 : stats.confidenceSum / total;
-            double max = stats == null ? 0 : stats.maxConfidence;
-            metrics.add(new DetectionStore.LabelMetric(
-                    CocoLabels.NAMES[classId], currentCounts[classId], total, average, max
-            ));
-        }
-        metrics.sort(Comparator.comparingLong((DetectionStore.LabelMetric m) -> m.totalCount).reversed());
+        if (analytics != null) analytics.update(result.detections, lastFps, result.pipelineMs);
+        DetectionStore.AnalyticsSnapshot analyticsSnapshot = analytics == null
+                ? DetectionStore.AnalyticsSnapshot.empty(
+                        DetectionStore.getInputSize(), DetectionStore.getConfidenceThreshold())
+                : analytics.snapshot(
+                        DetectionStore.getInputSize(), DetectionStore.getConfidenceThreshold(), false);
 
         DetectionStore.publish(new DetectionStore.DetectionSnapshot(
-                "ライブ検出中",
-                lastFps,
-                inputSize,
-                frameCount,
-                result.detections.size(),
-                result.preprocessMs,
-                result.inferenceMs,
-                result.postprocessMs,
-                result.pipelineMs,
-                result.preview,
-                metrics
-        ));
+                "ライブ検出中", lastFps, DetectionStore.getInputSize(), frameCount,
+                result.detections.size(), result.preprocessMs, result.inferenceMs,
+                result.postprocessMs, result.pipelineMs, analyticsSnapshot));
+    }
+
+    private void publishSnapshot(String status, DetectionStore.AnalyticsSnapshot forcedAnalytics) {
+        DetectionStore.AnalyticsSnapshot value = forcedAnalytics != null
+                ? forcedAnalytics
+                : analytics == null
+                    ? DetectionStore.AnalyticsSnapshot.empty(
+                            DetectionStore.getInputSize(), DetectionStore.getConfidenceThreshold())
+                    : analytics.snapshot(
+                            DetectionStore.getInputSize(), DetectionStore.getConfidenceThreshold(), false);
+        DetectionStore.publish(new DetectionStore.DetectionSnapshot(
+                status, lastFps, DetectionStore.getInputSize(), frameCount, 0,
+                0, 0, 0, 0, value));
+    }
+
+    private void publishError(String message) {
+        publishSnapshot(message, null);
     }
 
     private static Bitmap imageToBitmap(Image image) {
@@ -295,20 +267,10 @@ public final class CaptureService extends Service {
         return cropped;
     }
 
-    private void publishError(String message) {
-        DetectionStore.publish(new DetectionStore.DetectionSnapshot(
-                message, 0, DetectionStore.getInputSize(), frameCount, 0,
-                0, 0, 0, 0, null, new ArrayList<>()
-        ));
-    }
-
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    "VisionPulse live detection",
-                    NotificationManager.IMPORTANCE_LOW
-            );
+                    CHANNEL_ID, "VisionPulse live detection", NotificationManager.IMPORTANCE_LOW);
             channel.setDescription("画面をリアルタイム解析している間に表示されます");
             getSystemService(NotificationManager.class).createNotificationChannel(channel);
         }
@@ -318,8 +280,7 @@ public final class CaptureService extends Service {
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
                 ? new Notification.Builder(this, CHANNEL_ID)
                 : new Notification.Builder(this);
-        return builder
-                .setContentTitle("VisionPulse")
+        return builder.setContentTitle("VisionPulse")
                 .setContentText(text)
                 .setSmallIcon(android.R.drawable.ic_menu_camera)
                 .setOngoing(true)
@@ -327,23 +288,32 @@ public final class CaptureService extends Service {
     }
 
     private void updateNotification(String text) {
-        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        manager.notify(NOTIFICATION_ID, createNotification(text));
+        ((NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE))
+                .notify(NOTIFICATION_ID, createNotification(text));
     }
 
     @Override
     public void onDestroy() {
         DetectionStore.setRunning(false);
+
+        DetectionStore.AnalyticsSnapshot finalAnalytics = null;
+        if (sessionStarted && analytics != null && !finalSnapshotSaved) {
+            finalAnalytics = analytics.snapshot(
+                    DetectionStore.getInputSize(), DetectionStore.getConfidenceThreshold(), true);
+            SessionHistory.save(getApplicationContext(), finalAnalytics);
+            finalSnapshotSaved = true;
+        }
+
         mainHandler.post(() -> {
             if (overlayView != null && windowManager != null) {
                 try {
                     windowManager.removeView(overlayView);
-                } catch (Exception ignored) {
-                }
+                } catch (Exception ignored) {}
             }
             overlayView = null;
             windowManager = null;
         });
+
         if (imageReader != null) {
             imageReader.setOnImageAvailableListener(null, null);
             imageReader.close();
@@ -354,26 +324,21 @@ public final class CaptureService extends Service {
             virtualDisplay = null;
         }
         if (projection != null) {
-            projection.stop();
+            MediaProjection local = projection;
             projection = null;
+            local.stop();
         }
         inferenceExecutor.shutdownNow();
         if (detector != null) {
-            try {
-                detector.close();
-            } catch (Exception ignored) {
-            }
+            try { detector.close(); } catch (Exception ignored) {}
             detector = null;
         }
         if (captureThread != null) {
             captureThread.quitSafely();
             captureThread = null;
         }
-        DetectionStore.DetectionSnapshot current = DetectionStore.getSnapshot();
-        DetectionStore.publish(new DetectionStore.DetectionSnapshot(
-                "停止中", 0, DetectionStore.getInputSize(), frameCount, 0,
-                0, 0, 0, 0, current.preview, current.metrics
-        ));
+
+        publishSnapshot("停止中", finalAnalytics);
         super.onDestroy();
     }
 
@@ -381,11 +346,5 @@ public final class CaptureService extends Service {
     @Override
     public IBinder onBind(Intent intent) {
         return null;
-    }
-
-    private static final class LabelStats {
-        long totalCount;
-        double confidenceSum;
-        double maxConfidence;
     }
 }
