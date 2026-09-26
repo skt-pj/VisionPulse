@@ -58,8 +58,8 @@ jobs:
       - name: Validate version metadata
         run: |
           source version.properties
-          test "$VERSION_NAME" = "0.1.3"
-          test "$VERSION_CODE" = "4"
+          test "$VERSION_NAME" = "0.1.4"
+          test "$VERSION_CODE" = "5"
 
       - name: Build and test
         run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
@@ -94,6 +94,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: VisionPulse-v0.1.3-common
+          name: VisionPulse-v0.1.4-common
           path: artifact/
           if-no-files-found: error
