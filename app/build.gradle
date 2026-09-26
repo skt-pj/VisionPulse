@@ -11,6 +11,15 @@ android {
     namespace 'com.skt.visionpulse'
     compileSdk 35
 
+    signingConfigs {
+        commonStable {
+            storeFile rootProject.file('ci/skt-common-signing.jks')
+            storePassword '2048td-release'
+            keyAlias '2048td-release'
+            keyPassword '2048td-release'
+        }
+    }
+
     defaultConfig {
         applicationId 'com.skt.visionpulse'
         minSdk 26
@@ -24,9 +33,11 @@ android {
     buildTypes {
         debug {
             minifyEnabled false
+            signingConfig signingConfigs.commonStable
         }
         release {
             minifyEnabled false
+            signingConfig signingConfigs.commonStable
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
