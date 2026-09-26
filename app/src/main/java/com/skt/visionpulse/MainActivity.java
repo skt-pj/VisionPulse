@@ -6,9 +6,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -22,12 +20,9 @@ import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.Window;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
-import android.widget.FrameLayout;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -40,14 +35,14 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
-import java.util.ArrayList;
+import java.text.DateFormat;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
 public final class MainActivity extends AppCompatActivity {
     private static final int BG = 0xFF090D12;
     private static final int SURFACE = 0xFF121820;
-    private static final int SURFACE_ALT = 0xFF171F29;
     private static final int BORDER = 0xFF26313E;
     private static final int TEXT = 0xFFF4F7FA;
     private static final int MUTED = 0xFF94A3B8;
@@ -57,46 +52,34 @@ public final class MainActivity extends AppCompatActivity {
     private static final int DANGER = 0xFFFF6B7A;
 
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
-
-    private TextView statusText;
-    private TextView statusPill;
-    private TextView fpsValue;
-    private TextView latencyValue;
-    private TextView detectionsValue;
-    private TextView framesValue;
-    private TextView preprocessValue;
-    private TextView inferenceValue;
-    private TextView postprocessValue;
+    private LinearLayout content;
+    private LinearLayout tabBar;
+    private TextView status;
     private TextView thresholdValue;
-    private TextView previewPlaceholder;
-    private ImageView previewImage;
-    private Button startStopButton;
-    private PerformanceChartView performanceChart;
-    private DetectionBarsView detectionBars;
+    private Button primaryAction;
+    private int selectedTab;
 
     private ActivityResultLauncher<Intent> captureLauncher;
     private ActivityResultLauncher<Intent> overlayPermissionLauncher;
 
     private final Runnable refreshTask = new Runnable() {
-        @Override
-        public void run() {
-            renderSnapshot();
-            uiHandler.postDelayed(this, 400);
+        @Override public void run() {
+            render();
+            uiHandler.postDelayed(this, 500);
         }
     };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        Window window = getWindow();
-        window.setStatusBarColor(BG);
-        window.setNavigationBarColor(BG);
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(BG);
 
         captureLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
                     if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
-                        statusText.setText("画面共有が許可されませんでした");
+                        status.setText("画面共有が許可されませんでした");
                         return;
                     }
                     Intent serviceIntent = new Intent(this, CaptureService.class)
@@ -104,394 +87,389 @@ public final class MainActivity extends AppCompatActivity {
                             .putExtra(CaptureService.EXTRA_RESULT_CODE, result.getResultCode())
                             .putExtra(CaptureService.EXTRA_DATA, result.getData());
                     ContextCompat.startForegroundService(this, serviceIntent);
-                    statusText.setText("画面キャプチャを開始しています。");
+                    status.setText("ライブ検出を開始しています");
                 }
         );
 
         overlayPermissionLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
-                    if (Settings.canDrawOverlays(this)) {
-                        requestScreenCapture();
-                    } else {
-                        statusText.setText("検出結果を重ねるにはオーバーレイ権限が必要です");
-                    }
+                    if (Settings.canDrawOverlays(this)) requestScreenCapture();
+                    else status.setText("画面上へ検出結果を重ねるにはオーバーレイ権限が必要です");
                 }
         );
 
-        setContentView(buildUi());
+        setContentView(buildScreen());
         requestNotificationPermissionIfNeeded();
     }
 
-    private View buildUi() {
-        LinearLayout screen = new LinearLayout(this);
-        screen.setOrientation(LinearLayout.VERTICAL);
-        screen.setBackgroundColor(BG);
+    private View buildScreen() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(BG);
 
-        screen.addView(buildTopBar(), new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.VERTICAL);
+        header.setPadding(dp(18), dp(18), dp(18), dp(12));
+        header.addView(text("VisionPulse", 27, TEXT, Typeface.BOLD));
+        TextView subtitle = text("YOLO26n live test console", 12, MUTED, Typeface.BOLD);
+        subtitle.setPadding(0, dp(2), 0, dp(12));
+        header.addView(subtitle);
+        header.addView(buildSetupCard());
+        root.addView(header);
+
+        tabBar = new LinearLayout(this);
+        tabBar.setOrientation(LinearLayout.HORIZONTAL);
+        tabBar.setPadding(dp(12), dp(2), dp(12), dp(8));
+        String[] tabs = {"Overview", "Timeline", "Labels", "Compare"};
+        for (int i = 0; i < tabs.length; i++) {
+            final int index = i;
+            Button button = new Button(this);
+            button.setText(tabs[i]);
+            button.setTextSize(11);
+            button.setAllCaps(false);
+            button.setOnClickListener(v -> {
+                selectedTab = index;
+                render();
+            });
+            tabBar.addView(button, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        }
+        root.addView(tabBar);
 
         ScrollView scroll = new ScrollView(this);
-        scroll.setFillViewport(true);
-        scroll.setClipToPadding(false);
-
-        LinearLayout content = new LinearLayout(this);
+        content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(16), dp(4), dp(16), dp(24));
-        scroll.addView(content, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
+        content.setPadding(dp(16), dp(2), dp(16), dp(24));
+        scroll.addView(content);
+        root.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        addSectionHeader(content, "LIVE VIEW", "YOLO26n · COCO 80 classes");
-        content.addView(buildPreviewCard(), fullWidth(dp(320)));
+        LinearLayout footer = new LinearLayout(this);
+        footer.setOrientation(LinearLayout.VERTICAL);
+        footer.setPadding(dp(16), dp(8), dp(16), dp(14));
+        status = text("停止中", 12, MUTED, Typeface.NORMAL);
+        status.setPadding(dp(2), 0, 0, dp(7));
+        footer.addView(status);
 
-        addSectionHeader(content, "SESSION", "Live inference health");
-        content.addView(buildKpiGrid(), fullWidth(ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        addSectionHeader(content, "PERFORMANCE", "Rolling device-side runtime");
-        content.addView(buildPerformanceCard(), fullWidth(ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        addSectionHeader(content, "DETECTIONS", "Top classes by observed count");
-        content.addView(buildDetectionCard(), fullWidth(ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        addSectionHeader(content, "PIPELINE", "Latest frame breakdown");
-        content.addView(buildPipelineCard(), fullWidth(ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        addSectionHeader(content, "INFERENCE SETTINGS", "Changes apply to the live detector");
-        content.addView(buildSettingsCard(), fullWidth(ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        statusText = text("停止中", 13, MUTED, Typeface.NORMAL);
-        statusText.setPadding(dp(2), dp(14), dp(2), 0);
-        content.addView(statusText, matchWrap());
-
-        screen.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f
-        ));
-
-        screen.addView(buildBottomAction(), new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
-        return screen;
-    }
-
-    private View buildTopBar() {
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(18), dp(18), dp(18), dp(12));
-
-        LinearLayout titleGroup = new LinearLayout(this);
-        titleGroup.setOrientation(LinearLayout.VERTICAL);
-
-        TextView title = text("VisionPulse", 25, TEXT, Typeface.BOLD);
-        TextView subtitle = text("ON-DEVICE VISION CONSOLE", 11, MUTED, Typeface.BOLD);
-        subtitle.setLetterSpacing(0.08f);
-        titleGroup.addView(title);
-        titleGroup.addView(subtitle);
-
-        bar.addView(titleGroup, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        statusPill = text("IDLE", 11, MUTED, Typeface.BOLD);
-        statusPill.setGravity(Gravity.CENTER);
-        statusPill.setPadding(dp(12), dp(7), dp(12), dp(7));
-        statusPill.setBackground(roundRect(SURFACE_ALT, 999, BORDER, 1));
-        bar.addView(statusPill);
-
-        return bar;
-    }
-
-    private View buildPreviewCard() {
-        FrameLayout frame = new FrameLayout(this);
-        frame.setBackground(roundRect(0xFF05080C, 16, BORDER, 1));
-        frame.setPadding(dp(1), dp(1), dp(1), dp(1));
-
-        previewImage = new ImageView(this);
-        previewImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        previewImage.setBackgroundColor(0xFF05080C);
-        previewImage.setContentDescription("Live detection preview");
-        frame.addView(previewImage, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-
-        previewPlaceholder = text("WAITING FOR CAPTURE", 12, MUTED, Typeface.BOLD);
-        previewPlaceholder.setGravity(Gravity.CENTER);
-        previewPlaceholder.setLetterSpacing(0.08f);
-        frame.addView(previewPlaceholder, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-
-        TextView liveBadge = text(" LIVE ", 10, TEXT, Typeface.BOLD);
-        liveBadge.setGravity(Gravity.CENTER);
-        liveBadge.setPadding(dp(7), dp(4), dp(7), dp(4));
-        liveBadge.setBackground(roundRect(0xCC1C2631, 7, 0, 0));
-        FrameLayout.LayoutParams badgeParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP | Gravity.START
-        );
-        badgeParams.setMargins(dp(12), dp(12), 0, 0);
-        frame.addView(liveBadge, badgeParams);
-        return frame;
-    }
-
-    private View buildKpiGrid() {
-        LinearLayout group = new LinearLayout(this);
-        group.setOrientation(LinearLayout.VERTICAL);
-
-        LinearLayout row1 = new LinearLayout(this);
-        row1.setOrientation(LinearLayout.HORIZONTAL);
-        fpsValue = metricCard(row1, "FPS", "0.0", "frames / sec", ACCENT);
-        latencyValue = metricCard(row1, "LATENCY", "0.0 ms", "pipeline", BLUE);
-        group.addView(row1, fullWidth(ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        LinearLayout row2 = new LinearLayout(this);
-        row2.setOrientation(LinearLayout.HORIZONTAL);
-        detectionsValue = metricCard(row2, "OBJECTS", "0", "current frame", WARN);
-        framesValue = metricCard(row2, "FRAMES", "0", "processed", TEXT);
-        LinearLayout.LayoutParams rowParams = fullWidth(ViewGroup.LayoutParams.WRAP_CONTENT);
-        rowParams.topMargin = dp(10);
-        group.addView(row2, rowParams);
-
-        return group;
-    }
-
-    private TextView metricCard(LinearLayout row, String label, String initial, String caption, int accent) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(14), dp(13), dp(14), dp(12));
-        card.setBackground(roundRect(SURFACE, 14, BORDER, 1));
-
-        TextView labelView = text(label, 10, MUTED, Typeface.BOLD);
-        labelView.setLetterSpacing(0.08f);
-        TextView valueView = text(initial, 24, accent, Typeface.BOLD);
-        valueView.setPadding(0, dp(5), 0, dp(2));
-        TextView captionView = text(caption, 11, MUTED, Typeface.NORMAL);
-
-        card.addView(labelView);
-        card.addView(valueView);
-        card.addView(captionView);
-
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        if (row.getChildCount() > 0) params.leftMargin = dp(10);
-        row.addView(card, params);
-        return valueView;
-    }
-
-    private View buildPerformanceCard() {
-        LinearLayout card = card();
-        TextView title = text("Runtime trend", 16, TEXT, Typeface.BOLD);
-        TextView subtitle = text("FPS and end-to-end latency · latest 60 samples", 12, MUTED, Typeface.NORMAL);
-        subtitle.setPadding(0, dp(3), 0, dp(10));
-        card.addView(title);
-        card.addView(subtitle);
-
-        performanceChart = new PerformanceChartView(this);
-        card.addView(performanceChart, fullWidth(dp(154)));
-
-        LinearLayout legend = new LinearLayout(this);
-        legend.setOrientation(LinearLayout.HORIZONTAL);
-        legend.setPadding(0, dp(8), 0, 0);
-        legend.addView(legendItem("FPS", ACCENT), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        legend.addView(legendItem("Latency", BLUE), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        card.addView(legend);
-        return card;
-    }
-
-    private View legendItem(String label, int color) {
-        LinearLayout item = new LinearLayout(this);
-        item.setOrientation(LinearLayout.HORIZONTAL);
-        item.setGravity(Gravity.CENTER_VERTICAL);
-
-        View dot = new View(this);
-        dot.setBackground(roundRect(color, 999, 0, 0));
-        item.addView(dot, new LinearLayout.LayoutParams(dp(8), dp(8)));
-
-        TextView text = text(label, 11, MUTED, Typeface.BOLD);
-        text.setPadding(dp(7), 0, 0, 0);
-        item.addView(text);
-        return item;
-    }
-
-    private View buildDetectionCard() {
-        LinearLayout card = card();
-        TextView title = text("Class activity", 16, TEXT, Typeface.BOLD);
-        TextView subtitle = text("Current / cumulative count with average confidence", 12, MUTED, Typeface.NORMAL);
-        subtitle.setPadding(0, dp(3), 0, dp(8));
-        card.addView(title);
-        card.addView(subtitle);
-
-        detectionBars = new DetectionBarsView(this);
-        card.addView(detectionBars, fullWidth(dp(230)));
-        return card;
-    }
-
-    private View buildPipelineCard() {
-        LinearLayout card = card();
-
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-
-        preprocessValue = compactMetric(row, "PRE", "0.0 ms");
-        inferenceValue = compactMetric(row, "INFER", "0.0 ms");
-        postprocessValue = compactMetric(row, "POST", "0.0 ms");
-
-        card.addView(row, fullWidth(ViewGroup.LayoutParams.WRAP_CONTENT));
-        return card;
-    }
-
-    private TextView compactMetric(LinearLayout row, String label, String initial) {
-        LinearLayout cell = new LinearLayout(this);
-        cell.setOrientation(LinearLayout.VERTICAL);
-        cell.setPadding(dp(12), dp(10), dp(12), dp(10));
-        cell.setBackground(roundRect(SURFACE_ALT, 12, 0, 0));
-
-        TextView labelView = text(label, 10, MUTED, Typeface.BOLD);
-        TextView value = text(initial, 16, TEXT, Typeface.BOLD);
-        value.setPadding(0, dp(4), 0, 0);
-        cell.addView(labelView);
-        cell.addView(value);
-
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        if (row.getChildCount() > 0) params.leftMargin = dp(8);
-        row.addView(cell, params);
-        return value;
-    }
-
-    private View buildSettingsCard() {
-        LinearLayout card = card();
-
-        TextView inputLabel = text("Input resolution", 12, MUTED, Typeface.BOLD);
-        card.addView(inputLabel);
-
-        Spinner resolutionSpinner = new Spinner(this);
-        String[] resolutions = {"320 × 320", "416 × 416", "512 × 512", "640 × 640"};
-        ArrayAdapter<String> resolutionAdapter = new ArrayAdapter<String>(
-                this,
-                android.R.layout.simple_spinner_dropdown_item,
-                resolutions
-        ) {
-            @Override
-            public View getView(int position, View convertView, ViewGroup parent) {
-                TextView view = (TextView) super.getView(position, convertView, parent);
-                view.setTextColor(TEXT);
-                view.setTextSize(15);
-                return view;
-            }
-        };
-        resolutionSpinner.setAdapter(resolutionAdapter);
-        resolutionSpinner.setSelection(1);
-        resolutionSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                int[] values = {320, 416, 512, 640};
-                DetectionStore.setInputSize(values[position]);
-            }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {}
-        });
-        resolutionSpinner.setBackground(roundRect(SURFACE_ALT, 10, BORDER, 1));
-        LinearLayout.LayoutParams spinnerParams = fullWidth(dp(48));
-        spinnerParams.topMargin = dp(7);
-        card.addView(resolutionSpinner, spinnerParams);
-
-        LinearLayout thresholdHeader = new LinearLayout(this);
-        thresholdHeader.setOrientation(LinearLayout.HORIZONTAL);
-        thresholdHeader.setGravity(Gravity.CENTER_VERTICAL);
-        thresholdHeader.setPadding(0, dp(16), 0, 0);
-
-        TextView thresholdLabel = text("Confidence threshold", 12, MUTED, Typeface.BOLD);
-        thresholdValue = text("0.25", 13, ACCENT, Typeface.BOLD);
-        thresholdValue.setGravity(Gravity.END);
-
-        thresholdHeader.addView(thresholdLabel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        thresholdHeader.addView(thresholdValue);
-        card.addView(thresholdHeader);
-
-        SeekBar thresholdSeek = new SeekBar(this);
-        thresholdSeek.setMax(80);
-        thresholdSeek.setProgress(15);
-        thresholdSeek.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
-        thresholdSeek.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
-        thresholdSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                float value = (progress + 10) / 100f;
-                DetectionStore.setConfidenceThreshold(value);
-                thresholdValue.setText(String.format(Locale.US, "%.2f", value));
-            }
-
-            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
-            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
-        });
-        card.addView(thresholdSeek, fullWidth(ViewGroup.LayoutParams.WRAP_CONTENT));
-        return card;
-    }
-
-    private View buildBottomAction() {
-        LinearLayout dock = new LinearLayout(this);
-        dock.setOrientation(LinearLayout.VERTICAL);
-        dock.setPadding(dp(16), dp(10), dp(16), dp(14));
-        dock.setBackgroundColor(BG);
-
-        startStopButton = new Button(this);
-        startStopButton.setText("START LIVE DETECTION");
-        startStopButton.setTextColor(0xFF07100E);
-        startStopButton.setTextSize(14);
-        startStopButton.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        startStopButton.setAllCaps(false);
-        startStopButton.setLetterSpacing(0.04f);
-        startStopButton.setBackground(roundRect(ACCENT, 13, 0, 0));
-        startStopButton.setOnClickListener(v -> {
+        primaryAction = new Button(this);
+        primaryAction.setText("ライブテスト開始");
+        primaryAction.setAllCaps(false);
+        primaryAction.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        primaryAction.setOnClickListener(v -> {
             if (DetectionStore.isRunning()) {
                 stopService(new Intent(this, CaptureService.class));
             } else {
                 startLiveMode();
             }
         });
-        dock.addView(startStopButton, fullWidth(dp(54)));
-        return dock;
+        footer.addView(primaryAction, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(54)));
+        root.addView(footer);
+
+        return root;
+    }
+
+    private View buildSetupCard() {
+        LinearLayout card = card();
+        card.addView(text("TEST SETUP", 11, MUTED, Typeface.BOLD));
+
+        LinearLayout resolutionRow = new LinearLayout(this);
+        resolutionRow.setOrientation(LinearLayout.HORIZONTAL);
+        resolutionRow.setGravity(Gravity.CENTER_VERTICAL);
+        resolutionRow.addView(text("Input resolution", 14, TEXT, Typeface.BOLD),
+                new LinearLayout.LayoutParams(0, dp(52), 1f));
+
+        Spinner spinner = new Spinner(this);
+        String[] resolutions = {"320", "416", "512", "640"};
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(
+                this, android.R.layout.simple_spinner_dropdown_item, resolutions);
+        spinner.setAdapter(adapter);
+        spinner.setSelection(1);
+        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                int[] values = {320, 416, 512, 640};
+                DetectionStore.setInputSize(values[position]);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        resolutionRow.addView(spinner, new LinearLayout.LayoutParams(dp(110), dp(52)));
+        card.addView(resolutionRow);
+
+        LinearLayout thresholdHeader = new LinearLayout(this);
+        thresholdHeader.setOrientation(LinearLayout.HORIZONTAL);
+        thresholdHeader.setGravity(Gravity.CENTER_VERTICAL);
+        thresholdHeader.addView(text("Confidence threshold", 14, TEXT, Typeface.BOLD),
+                new LinearLayout.LayoutParams(0, dp(36), 1f));
+        thresholdValue = text("0.25", 14, ACCENT, Typeface.BOLD);
+        thresholdHeader.addView(thresholdValue);
+        card.addView(thresholdHeader);
+
+        SeekBar threshold = new SeekBar(this);
+        threshold.setMax(80);
+        threshold.setProgress(15);
+        threshold.setProgressTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        threshold.setThumbTintList(android.content.res.ColorStateList.valueOf(ACCENT));
+        threshold.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                float value = (progress + 10) / 100f;
+                DetectionStore.setConfidenceThreshold(value);
+                thresholdValue.setText(String.format(Locale.US, "%.2f", value));
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) {}
+            @Override public void onStopTrackingTouch(SeekBar seekBar) {}
+        });
+        card.addView(threshold);
+
+        TextView hint = text(
+                "開始後はテストしたいアプリへ移動してください。検出枠はその画面上に直接表示されます。",
+                12, MUTED, Typeface.NORMAL);
+        hint.setPadding(0, dp(7), 0, 0);
+        card.addView(hint);
+        return card;
+    }
+
+    private void render() {
+        DetectionStore.DetectionSnapshot snapshot = DetectionStore.getSnapshot();
+        DetectionStore.AnalyticsSnapshot analytics = snapshot.analytics;
+        boolean running = DetectionStore.isRunning();
+
+        status.setText(running
+                ? "ライブ検出中 — 他のアプリへ移動して確認できます"
+                : snapshot.status);
+        primaryAction.setText(running ? "ライブテスト停止" : "ライブテスト開始");
+        primaryAction.setTextColor(running ? TEXT : 0xFF07100E);
+        primaryAction.setBackground(roundRect(running ? 0xFF542832 : ACCENT, 14));
+
+        for (int i = 0; i < tabBar.getChildCount(); i++) {
+            Button button = (Button) tabBar.getChildAt(i);
+            boolean selected = i == selectedTab;
+            button.setTextColor(selected ? ACCENT : MUTED);
+            button.setBackground(roundRect(selected ? 0xFF15302D : BG, 12));
+        }
+
+        content.removeAllViews();
+        if (selectedTab == 0) renderOverview(analytics, snapshot, running);
+        else if (selectedTab == 1) renderTimeline(analytics);
+        else if (selectedTab == 2) renderLabels(analytics);
+        else renderCompare();
+    }
+
+    private void renderOverview(DetectionStore.AnalyticsSnapshot a,
+            DetectionStore.DetectionSnapshot s, boolean running) {
+        addSection("WHAT DID THE MODEL ACTUALLY DO?",
+                "単純な検出回数ではなく、継続性・揺れ・処理性能で判断します。");
+
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+        metric(row1, "Stable", String.valueOf(a.stableEpisodes), "1秒以上・継続検出", ACCENT);
+        metric(row1, "Unstable", String.valueOf(a.unstableEpisodes), "短時間・途切れが多い", WARN);
+        content.addView(row1, full());
+
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        metric(row2, "Avg episode", formatSeconds(a.averageEpisodeMs), "認識の継続時間", BLUE);
+        metric(row2, "Label switches", String.valueOf(a.labelSwitches), "同位置でクラス変化", DANGER);
+        LinearLayout.LayoutParams p2 = full();
+        p2.topMargin = dp(9);
+        content.addView(row2, p2);
+
+        LinearLayout row3 = new LinearLayout(this);
+        row3.setOrientation(LinearLayout.HORIZONTAL);
+        metric(row3, "Reacquired", String.valueOf(a.lostAndReacquired), "消失後に再検出", WARN);
+        metric(row3, "Avg confidence", percent(a.averageConfidence), "確信度。正解率ではない", TEXT);
+        LinearLayout.LayoutParams p3 = full();
+        p3.topMargin = dp(9);
+        content.addView(row3, p3);
+
+        addSection("PERFORMANCE", "同じ認識品質をどのコストで出せたか");
+        LinearLayout perf = card();
+        perf.addView(kv("Average FPS", String.format(Locale.US, "%.1f", a.averageFps)));
+        perf.addView(kv("P50 pipeline", String.format(Locale.US, "%.1f ms", a.p50PipelineMs)));
+        perf.addView(kv("P95 pipeline", String.format(Locale.US, "%.1f ms", a.p95PipelineMs)));
+        perf.addView(kv("Dropped frames", percent(a.droppedFrameRate)));
+        perf.addView(kv("Processed frames", String.format(Locale.US, "%,d", a.processedFrames)));
+        perf.addView(kv("Current objects", String.valueOf(s.currentDetections)));
+        content.addView(perf, full());
+
+        if (!running && a.processedFrames > 0) {
+            TextView conclusion = text(buildSummarySentence(a), 14, TEXT, Typeface.BOLD);
+            conclusion.setPadding(dp(14), dp(14), dp(14), dp(14));
+            conclusion.setBackground(roundRect(0xFF14211F, 14));
+            LinearLayout.LayoutParams cp = full();
+            cp.topMargin = dp(12);
+            content.addView(conclusion, cp);
+        }
+    }
+
+    private void renderTimeline(DetectionStore.AnalyticsSnapshot a) {
+        addSection("DETECTION TIMELINE",
+                "何がいつ安定して見え、どこで途切れたかを確認します。");
+        if (a.episodes.isEmpty()) {
+            empty("まだ検出エピソードがありません");
+            return;
+        }
+
+        TimelineView timeline = new TimelineView(this);
+        timeline.setData(a.episodes, Math.max(1000, a.durationMs));
+        content.addView(timeline, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Math.max(dp(220), dp(42) * Math.min(12, a.episodes.size()))));
+
+        TextView note = text(
+                "緑=安定度70%以上 / 黄=それ未満。短い点滅が多いラベルは誤検出候補として確認してください。",
+                12, MUTED, Typeface.NORMAL);
+        note.setPadding(0, dp(10), 0, 0);
+        content.addView(note);
+    }
+
+    private void renderLabels(DetectionStore.AnalyticsSnapshot a) {
+        addSection("LABEL BEHAVIOR",
+                "「何回出たか」ではなく、どれだけ長く・安定して認識したか");
+        if (a.labels.isEmpty()) {
+            empty("まだラベルデータがありません");
+            return;
+        }
+
+        for (DetectionStore.LabelBehavior label : a.labels) {
+            LinearLayout item = card();
+            LinearLayout heading = new LinearLayout(this);
+            heading.setOrientation(LinearLayout.HORIZONTAL);
+            heading.addView(text(label.label, 17, TEXT, Typeface.BOLD),
+                    new LinearLayout.LayoutParams(0, dp(30), 1f));
+            TextView live = text(label.activeNow > 0 ? "LIVE" : "", 11, ACCENT, Typeface.BOLD);
+            live.setGravity(Gravity.END);
+            heading.addView(live);
+            item.addView(heading);
+
+            item.addView(kv("Episodes", String.valueOf(label.episodes)));
+            item.addView(kv("Visible time", formatSeconds(label.visibleMs)));
+            item.addView(kv("Stability", percent(label.stability)));
+            item.addView(kv("Average confidence", percent(label.averageConfidence)));
+            item.addView(kv("Confidence range",
+                    String.format(Locale.US, "%.2f — %.2f",
+                            label.minConfidence, label.maxConfidence)));
+
+            TextView interpretation = text(
+                    labelInterpretation(label), 12,
+                    label.stability >= 0.70 ? ACCENT : WARN,
+                    Typeface.BOLD);
+            interpretation.setPadding(0, dp(8), 0, 0);
+            item.addView(interpretation);
+
+            LinearLayout.LayoutParams p = full();
+            p.bottomMargin = dp(9);
+            content.addView(item, p);
+        }
+    }
+
+    private void renderCompare() {
+        addSection("SESSION COMPARE",
+                "解像度やthresholdを変えたテストを、速度と検出安定性で比較します。");
+
+        List<SessionHistory.SessionSummary> sessions = SessionHistory.load(this);
+        if (sessions.isEmpty()) {
+            empty("終了したテストセッションがまだありません");
+            return;
+        }
+
+        for (SessionHistory.SessionSummary s : sessions) {
+            LinearLayout item = card();
+            item.addView(text(
+                    s.inputSize + " px  ·  conf " + String.format(Locale.US, "%.2f", s.threshold),
+                    16, TEXT, Typeface.BOLD));
+            TextView date = text(
+                    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
+                            .format(new Date(s.startedAt)),
+                    11, MUTED, Typeface.NORMAL);
+            date.setPadding(0, dp(2), 0, dp(8));
+            item.addView(date);
+            item.addView(kv("Average FPS", String.format(Locale.US, "%.1f", s.averageFps)));
+            item.addView(kv("P95 latency", String.format(Locale.US, "%.1f ms", s.p95LatencyMs)));
+            item.addView(kv("Stable / unstable", s.stableEpisodes + " / " + s.unstableEpisodes));
+            item.addView(kv("Dropped frames", percent(s.dropRate)));
+            item.addView(kv("Avg confidence", percent(s.averageConfidence)));
+
+            LinearLayout.LayoutParams p = full();
+            p.bottomMargin = dp(9);
+            content.addView(item, p);
+        }
+    }
+
+    private String buildSummarySentence(DetectionStore.AnalyticsSnapshot a) {
+        int total = a.stableEpisodes + a.unstableEpisodes;
+        double stableRate = total == 0 ? 0 : a.stableEpisodes / (double) total;
+        if (total == 0) return "このセッションでは有効な検出エピソードがありませんでした。";
+        if (stableRate >= 0.75 && a.droppedFrameRate < 0.20) {
+            return "検出は比較的継続しています。次は解像度を下げ、同じ安定性を維持できるか比較できます。";
+        }
+        if (a.droppedFrameRate >= 0.35) {
+            return "処理落ちが大きいため、入力解像度を下げて再テストする価値があります。";
+        }
+        return "短時間・途切れの検出が目立ちます。TimelineとLabelsで不安定なクラスを確認してください。";
+    }
+
+    private String labelInterpretation(DetectionStore.LabelBehavior label) {
+        if (label.stability >= 0.85 && label.visibleMs >= 1500) return "継続して認識できています";
+        if (label.stability >= 0.65) return "概ね継続するが、途切れがあります";
+        if (label.visibleMs < 700) return "短時間の点滅が多く、誤検出候補です";
+        return "認識が不安定です";
+    }
+
+    private void addSection(String title, String subtitle) {
+        TextView t = text(title, 12, TEXT, Typeface.BOLD);
+        t.setPadding(dp(2), dp(16), 0, dp(2));
+        content.addView(t);
+        TextView s = text(subtitle, 12, MUTED, Typeface.NORMAL);
+        s.setPadding(dp(2), 0, 0, dp(9));
+        content.addView(s);
+    }
+
+    private void metric(LinearLayout row, String title, String value, String note, int valueColor) {
+        LinearLayout box = card();
+        box.addView(text(title, 11, MUTED, Typeface.BOLD));
+        TextView v = text(value, 23, valueColor, Typeface.BOLD);
+        v.setPadding(0, dp(5), 0, dp(2));
+        box.addView(v);
+        box.addView(text(note, 10, MUTED, Typeface.NORMAL));
+
+        LinearLayout.LayoutParams p =
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        if (row.getChildCount() > 0) p.leftMargin = dp(9);
+        row.addView(box, p);
+    }
+
+    private View kv(String left, String right) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(5), 0, dp(5));
+        row.addView(text(left, 12, MUTED, Typeface.NORMAL),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView value = text(right, 13, TEXT, Typeface.BOLD);
+        value.setGravity(Gravity.END);
+        row.addView(value);
+        return row;
     }
 
     private LinearLayout card() {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(15), dp(15), dp(15), dp(15));
-        card.setBackground(roundRect(SURFACE, 14, BORDER, 1));
+        card.setPadding(dp(14), dp(13), dp(14), dp(13));
+        card.setBackground(roundRect(SURFACE, 14));
         return card;
     }
 
-    private void addSectionHeader(LinearLayout root, String title, String subtitle) {
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.BOTTOM);
-        header.setPadding(dp(2), dp(18), dp(2), dp(8));
-
-        TextView titleView = text(title, 11, TEXT, Typeface.BOLD);
-        titleView.setLetterSpacing(0.10f);
-        TextView subtitleView = text(subtitle, 11, MUTED, Typeface.NORMAL);
-        subtitleView.setGravity(Gravity.END);
-
-        header.addView(titleView, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        header.addView(subtitleView);
-        root.addView(header);
+    private void empty(String message) {
+        TextView view = text(message, 14, MUTED, Typeface.NORMAL);
+        view.setGravity(Gravity.CENTER);
+        view.setPadding(dp(20), dp(40), dp(20), dp(40));
+        content.addView(view);
     }
 
     private void startLiveMode() {
         if (!Settings.canDrawOverlays(this)) {
-            Intent intent = new Intent(
+            overlayPermissionLauncher.launch(new Intent(
                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:" + getPackageName())
-            );
-            overlayPermissionLauncher.launch(intent);
+                    Uri.parse("package:" + getPackageName())));
             return;
         }
         requestScreenCapture();
@@ -503,40 +481,13 @@ public final class MainActivity extends AppCompatActivity {
         captureLauncher.launch(manager.createScreenCaptureIntent());
     }
 
-    private void renderSnapshot() {
-        DetectionStore.DetectionSnapshot snapshot = DetectionStore.getSnapshot();
-        boolean running = DetectionStore.isRunning();
-
-        statusText.setText(snapshot.status);
-        statusPill.setText(running ? "● LIVE" : "IDLE");
-        statusPill.setTextColor(running ? ACCENT : MUTED);
-        statusPill.setBackground(roundRect(running ? 0xFF12312C : SURFACE_ALT, 999, running ? 0xFF285E55 : BORDER, 1));
-
-        startStopButton.setText(running ? "STOP LIVE DETECTION" : "START LIVE DETECTION");
-        startStopButton.setTextColor(running ? TEXT : 0xFF07100E);
-        startStopButton.setBackground(roundRect(running ? 0xFF3A2027 : ACCENT, 13, running ? 0xFF6B3340 : 0, running ? 1 : 0));
-
-        fpsValue.setText(String.format(Locale.US, "%.1f", snapshot.fps));
-        latencyValue.setText(String.format(Locale.US, "%.1f ms", snapshot.pipelineMs));
-        detectionsValue.setText(String.valueOf(snapshot.currentDetections));
-        framesValue.setText(String.format(Locale.US, "%,d", snapshot.frameCount));
-
-        preprocessValue.setText(String.format(Locale.US, "%.1f ms", snapshot.preprocessMs));
-        inferenceValue.setText(String.format(Locale.US, "%.1f ms", snapshot.inferenceMs));
-        postprocessValue.setText(String.format(Locale.US, "%.1f ms", snapshot.postprocessMs));
-
-        if (running && snapshot.frameCount > 0) {
-            performanceChart.push((float) snapshot.fps, (float) snapshot.pipelineMs);
+    private void requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= 33
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(
+                    this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 41);
         }
-
-        if (snapshot.preview != null && !snapshot.preview.isRecycled()) {
-            previewImage.setImageBitmap(snapshot.preview);
-            previewPlaceholder.setVisibility(View.GONE);
-        } else {
-            previewPlaceholder.setVisibility(View.VISIBLE);
-        }
-
-        detectionBars.setMetrics(snapshot.metrics);
     }
 
     private TextView text(String value, int sp, int color, int style) {
@@ -548,214 +499,108 @@ public final class MainActivity extends AppCompatActivity {
         return view;
     }
 
-    private GradientDrawable roundRect(int fill, int radiusDp, int stroke, int strokeDp) {
+    private GradientDrawable roundRect(int color, int radius) {
         GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(fill);
-        drawable.setCornerRadius(dp(radiusDp));
-        if (strokeDp > 0) drawable.setStroke(dp(strokeDp), stroke);
+        drawable.setColor(color);
+        drawable.setCornerRadius(dp(radius));
+        drawable.setStroke(dp(1), BORDER);
         return drawable;
     }
 
-    private LinearLayout.LayoutParams fullWidth(int height) {
-        return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height);
-    }
-
-    private LinearLayout.LayoutParams matchWrap() {
+    private LinearLayout.LayoutParams full() {
         return new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        );
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private String formatSeconds(double ms) {
+        return String.format(Locale.US, "%.1f s", ms / 1000.0);
+    }
+
+    private String percent(double value) {
+        return String.format(Locale.US, "%.0f%%", value * 100.0);
     }
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
-    @Override
-    protected void onStart() {
+    @Override protected void onStart() {
         super.onStart();
         uiHandler.post(refreshTask);
     }
 
-    @Override
-    protected void onStop() {
+    @Override protected void onStop() {
         uiHandler.removeCallbacks(refreshTask);
         super.onStop();
     }
 
-    private void requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 33
-                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 41);
-        }
-    }
+    private static final class TimelineView extends View {
+        private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint railPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint stablePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint unstablePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private List<DetectionStore.EpisodeView> episodes = java.util.Collections.emptyList();
+        private long durationMs = 1000;
 
-    private static final class PerformanceChartView extends View {
-        private static final int MAX_SAMPLES = 60;
-        private final List<Float> fps = new ArrayList<>();
-        private final List<Float> latency = new ArrayList<>();
-        private final Paint gridPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint fpsPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint latencyPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-        PerformanceChartView(Context context) {
+        TimelineView(Context context) {
             super(context);
-            gridPaint.setColor(BORDER);
-            gridPaint.setStrokeWidth(1f);
-
-            fpsPaint.setColor(ACCENT);
-            fpsPaint.setStrokeWidth(3f);
-            fpsPaint.setStyle(Paint.Style.STROKE);
-            fpsPaint.setStrokeCap(Paint.Cap.ROUND);
-            fpsPaint.setStrokeJoin(Paint.Join.ROUND);
-
-            latencyPaint.setColor(BLUE);
-            latencyPaint.setStrokeWidth(3f);
-            latencyPaint.setStyle(Paint.Style.STROKE);
-            latencyPaint.setStrokeCap(Paint.Cap.ROUND);
-            latencyPaint.setStrokeJoin(Paint.Join.ROUND);
-
-            labelPaint.setColor(MUTED);
-            labelPaint.setTextSize(sp(context, 9));
+            textPaint.setColor(TEXT);
+            textPaint.setTextSize(sp(context, 11));
+            textPaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+            railPaint.setColor(BORDER);
+            stablePaint.setColor(ACCENT);
+            unstablePaint.setColor(WARN);
         }
 
-        void push(float fpsValue, float latencyValue) {
-            fps.add(Math.max(0f, fpsValue));
-            latency.add(Math.max(0f, latencyValue));
-            while (fps.size() > MAX_SAMPLES) fps.remove(0);
-            while (latency.size() > MAX_SAMPLES) latency.remove(0);
+        void setData(List<DetectionStore.EpisodeView> episodes, long durationMs) {
+            this.episodes = episodes;
+            this.durationMs = durationMs;
             invalidate();
         }
 
-        @Override
-        protected void onDraw(Canvas canvas) {
+        @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            float left = dp(getContext(), 2);
-            float top = dp(getContext(), 8);
-            float right = getWidth() - dp(getContext(), 2);
-            float bottom = getHeight() - dp(getContext(), 18);
+            int count = Math.min(12, episodes.size());
+            if (count == 0) return;
 
-            for (int i = 0; i <= 3; i++) {
-                float y = top + (bottom - top) * i / 3f;
-                canvas.drawLine(left, y, right, y, gridPaint);
-            }
-
-            canvas.drawText("60", left, top + labelPaint.getTextSize(), labelPaint);
-            canvas.drawText("0", left, bottom + dp(getContext(), 13), labelPaint);
-
-            if (fps.size() < 2) return;
-
-            float maxFps = 60f;
-            float maxLatency = 120f;
-            for (float v : fps) maxFps = Math.max(maxFps, v * 1.15f);
-            for (float v : latency) maxLatency = Math.max(maxLatency, v * 1.15f);
-
-            drawSeries(canvas, fps, left, top, right, bottom, maxFps, fpsPaint);
-            drawSeries(canvas, latency, left, top, right, bottom, maxLatency, latencyPaint);
-        }
-
-        private void drawSeries(Canvas canvas, List<Float> values, float left, float top, float right, float bottom, float max, Paint paint) {
-            if (values.size() < 2) return;
-            Path path = new Path();
-            for (int i = 0; i < values.size(); i++) {
-                float x = left + (right - left) * i / Math.max(1, MAX_SAMPLES - 1);
-                float normalized = Math.min(1f, values.get(i) / Math.max(1f, max));
-                float y = bottom - normalized * (bottom - top);
-                if (i == 0) path.moveTo(x, y);
-                else path.lineTo(x, y);
-            }
-            canvas.drawPath(path, paint);
-        }
-    }
-
-    private static final class DetectionBarsView extends View {
-        private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint valuePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint trackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final Paint barPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final List<DetectionStore.LabelMetric> metrics = new ArrayList<>();
-
-        DetectionBarsView(Context context) {
-            super(context);
-            labelPaint.setColor(TEXT);
-            labelPaint.setTextSize(sp(context, 11));
-            labelPaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
-
-            valuePaint.setColor(MUTED);
-            valuePaint.setTextSize(sp(context, 10));
-
-            trackPaint.setColor(SURFACE_ALT);
-            barPaint.setColor(ACCENT);
-        }
-
-        void setMetrics(List<DetectionStore.LabelMetric> values) {
-            metrics.clear();
-            if (values != null) metrics.addAll(values);
-            invalidate();
-        }
-
-        @Override
-        protected void onDraw(Canvas canvas) {
-            super.onDraw(canvas);
-            if (metrics.isEmpty()) {
-                Paint empty = new Paint(Paint.ANTI_ALIAS_FLAG);
-                empty.setColor(MUTED);
-                empty.setTextSize(sp(getContext(), 12));
-                canvas.drawText("No detections yet", dp(getContext(), 2), dp(getContext(), 28), empty);
-                return;
-            }
-
-            int count = Math.min(6, metrics.size());
-            long maxTotal = 1;
-            for (int i = 0; i < count; i++) {
-                maxTotal = Math.max(maxTotal, metrics.get(i).totalCount);
-            }
-
-            float rowHeight = getHeight() / (float) count;
-            float labelWidth = Math.min(dp(getContext(), 112), getWidth() * 0.34f);
-            float right = getWidth() - dp(getContext(), 4);
-            float barLeft = labelWidth;
-            float barHeight = dp(getContext(), 9);
+            float row = getHeight() / (float) count;
+            float labelWidth = Math.min(dp(getContext(), 100), getWidth() * 0.30f);
+            float right = getWidth() - dp(getContext(), 6);
 
             for (int i = 0; i < count; i++) {
-                DetectionStore.LabelMetric metric = metrics.get(i);
-                float y = i * rowHeight;
-                float baseline = y + dp(getContext(), 18);
-                canvas.drawText(ellipsize(metric.label, 14), dp(getContext(), 2), baseline, labelPaint);
+                DetectionStore.EpisodeView e = episodes.get(episodes.size() - count + i);
+                float y = i * row;
+                canvas.drawText(trim(e.label, 13), dp(getContext(), 4),
+                        y + row * 0.62f, textPaint);
 
-                String detail = String.format(
-                        Locale.US,
-                        "%d now · %,d total · %.0f%%",
-                        metric.currentCount,
-                        metric.totalCount,
-                        metric.averageConfidence * 100.0
-                );
-                canvas.drawText(detail, dp(getContext(), 2), baseline + dp(getContext(), 15), valuePaint);
+                RectF rail = new RectF(
+                        labelWidth, y + row * 0.35f, right, y + row * 0.65f);
+                canvas.drawRoundRect(rail, row * 0.12f, row * 0.12f, railPaint);
 
-                float barTop = y + rowHeight - dp(getContext(), 16);
-                RectF track = new RectF(barLeft, barTop, right, barTop + barHeight);
-                canvas.drawRoundRect(track, barHeight / 2f, barHeight / 2f, trackPaint);
-
-                float width = (right - barLeft) * metric.totalCount / (float) maxTotal;
-                RectF value = new RectF(barLeft, barTop, barLeft + Math.max(dp(getContext(), 5), width), barTop + barHeight);
-                canvas.drawRoundRect(value, barHeight / 2f, barHeight / 2f, barPaint);
+                float start = labelWidth
+                        + (right - labelWidth) * e.startMs / (float) durationMs;
+                float end = labelWidth
+                        + (right - labelWidth)
+                        * Math.max(e.startMs + 50, e.endMs) / (float) durationMs;
+                RectF bar = new RectF(
+                        start, y + row * 0.35f, Math.min(right, end), y + row * 0.65f);
+                canvas.drawRoundRect(
+                        bar, row * 0.12f, row * 0.12f,
+                        e.stability >= 0.70 ? stablePaint : unstablePaint);
             }
         }
 
-        private String ellipsize(String value, int max) {
-            if (value == null) return "unknown";
-            if (value.length() <= max) return value;
-            return value.substring(0, Math.max(1, max - 1)) + "…";
+        private String trim(String value, int max) {
+            return value.length() <= max ? value : value.substring(0, max - 1) + "…";
         }
-    }
 
-    private static float dp(Context context, int value) {
-        return value * context.getResources().getDisplayMetrics().density;
-    }
+        private static float dp(Context context, int value) {
+            return value * context.getResources().getDisplayMetrics().density;
+        }
 
-    private static float sp(Context context, int value) {
-        return value * context.getResources().getDisplayMetrics().scaledDensity;
+        private static float sp(Context context, int value) {
+            return value * context.getResources().getDisplayMetrics().scaledDensity;
+        }
     }
 }
