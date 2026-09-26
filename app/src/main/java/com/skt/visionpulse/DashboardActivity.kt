@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -374,6 +375,7 @@ private fun VisionPulseApp(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ObjectsPage(
     snapshot: ObjectTrackingStore.Snapshot,
@@ -989,7 +991,7 @@ private fun ComparePage(context: Context) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun SettingsSheet(onDismiss: () -> Unit) {
     var resolution by remember { mutableIntStateOf(DetectionStore.getInputSize()) }
