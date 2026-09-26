@@ -87,8 +87,8 @@ import androidx.core.content.ContextCompat
 import com.patrykandpatrick.vico.compose.cartesian.CartesianChartHost
 import com.patrykandpatrick.vico.compose.cartesian.layer.rememberLineCartesianLayer
 import com.patrykandpatrick.vico.compose.cartesian.rememberCartesianChart
-import com.patrykandpatrick.vico.core.cartesian.data.CartesianChartModel
-import com.patrykandpatrick.vico.core.cartesian.data.LineCartesianLayerModel
+import com.patrykandpatrick.vico.compose.cartesian.data.CartesianChartModelProducer
+import com.patrykandpatrick.vico.compose.cartesian.data.lineModel
 import kotlinx.coroutines.delay
 import java.text.DateFormat
 import java.util.Date
@@ -825,18 +825,19 @@ private fun RuntimeChartCard(
                     Text("Collecting runtime samples…", color = VisionMuted)
                 }
             } else {
-                val model = remember(values) {
-                    CartesianChartModel(
-                        LineCartesianLayerModel.build {
-                            series(y = values)
+                val modelProducer = remember { CartesianChartModelProducer() }
+                LaunchedEffect(values) {
+                    modelProducer.runTransaction {
+                        lineModel {
+                            series(values)
                         }
-                    )
+                    }
                 }
                 CartesianChartHost(
                     chart = rememberCartesianChart(
                         rememberLineCartesianLayer()
                     ),
-                    model = model,
+                    modelProducer = modelProducer,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(170.dp)
