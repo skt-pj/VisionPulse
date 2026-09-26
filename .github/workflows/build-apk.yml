@@ -3,6 +3,8 @@ name: Build APK
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -42,11 +44,11 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.10.2'
+          gradle-version: '8.11.1'
 
       - name: Restore common signing key
         run: |
@@ -58,8 +60,8 @@ jobs:
       - name: Validate version metadata
         run: |
           source version.properties
-          test "$VERSION_NAME" = "0.1.4"
-          test "$VERSION_CODE" = "5"
+          test "$VERSION_NAME" = "0.1.5"
+          test "$VERSION_CODE" = "6"
 
       - name: Build and test
         run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
@@ -94,6 +96,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: VisionPulse-v0.1.4-common
+          name: VisionPulse-v0.1.5-common
           path: artifact/
           if-no-files-found: error

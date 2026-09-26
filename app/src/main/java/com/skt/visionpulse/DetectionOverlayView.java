@@ -5,6 +5,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.graphics.Typeface;
 import android.view.View;
 
 import java.util.ArrayList;
@@ -18,7 +19,7 @@ final class DetectionOverlayView extends View {
     private final Paint hudPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint hudBackgroundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-    private List<YoloDetector.Detection> detections = new ArrayList<>();
+    private List<ObjectTrackingStore.TrackedDetection> detections = new ArrayList<>();
     private int sourceWidth = 1;
     private int sourceHeight = 1;
     private double fps;
@@ -28,19 +29,25 @@ final class DetectionOverlayView extends View {
     DetectionOverlayView(Context context) {
         super(context);
         setBackgroundColor(Color.TRANSPARENT);
+
         boxPaint.setStyle(Paint.Style.STROKE);
-        boxPaint.setStrokeWidth(dp(2.5f));
-        labelPaint.setTextSize(dp(13f));
-        labelPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        labelBackgroundPaint.setStyle(Paint.Style.FILL);
-        hudPaint.setColor(Color.WHITE);
-        hudPaint.setTextSize(dp(12f));
-        hudPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
-        hudBackgroundPaint.setColor(0xB0000000);
+        boxPaint.setStrokeWidth(dp(2.2f));
+
+        labelPaint.setColor(Color.WHITE);
+        labelPaint.setTextSize(dp(12.5f));
+        labelPaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+
+        labelBackgroundPaint.setColor(0xE6151A22);
+
+        hudPaint.setColor(0xFFF4F7FA);
+        hudPaint.setTextSize(dp(11.5f));
+        hudPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
+
+        hudBackgroundPaint.setColor(0xD90B0F14);
     }
 
-    void updateDetections(
-            List<YoloDetector.Detection> newDetections,
+    void updateTrackedDetections(
+            List<ObjectTrackingStore.TrackedDetection> newDetections,
             int frameWidth,
             int frameHeight,
             double currentFps,
@@ -56,22 +63,19 @@ final class DetectionOverlayView extends View {
         postInvalidate();
     }
 
-    void clearDetections() {
-        detections = new ArrayList<>();
-        postInvalidate();
-    }
-
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+
         float sx = getWidth() / (float) sourceWidth;
         float sy = getHeight() / (float) sourceHeight;
 
-        for (YoloDetector.Detection detection : detections) {
-            int color = Color.HSVToColor(new float[]{(detection.classId * 47f) % 360f, 0.9f, 1.0f});
+        for (ObjectTrackingStore.TrackedDetection tracked : detections) {
+            YoloDetector.Detection detection = tracked.detection;
+            int color = Color.HSVToColor(
+                    new float[]{(detection.classId * 47f) % 360f, 0.72f, 1.0f}
+            );
             boxPaint.setColor(color);
-            labelPaint.setColor(Color.WHITE);
-            labelBackgroundPaint.setColor(0xD9000000);
 
             RectF rect = new RectF(
                     detection.x1 * sx,
@@ -79,39 +83,68 @@ final class DetectionOverlayView extends View {
                     detection.x2 * sx,
                     detection.y2 * sy
             );
-            canvas.drawRect(rect, boxPaint);
+            canvas.drawRoundRect(rect, dp(7f), dp(7f), boxPaint);
 
-            String label = CocoLabels.NAMES[detection.classId] + String.format(Locale.US, " %.2f", detection.confidence);
-            float pad = dp(4f);
+            String label = CocoLabels.NAMES[detection.classId]
+                    + " #" + tracked.trackId
+                    + String.format(Locale.US, "  %.2f", detection.confidence);
+
+            float horizontalPad = dp(7f);
+            float verticalPad = dp(4f);
             float textWidth = labelPaint.measureText(label);
-            Paint.FontMetrics fm = labelPaint.getFontMetrics();
-            float textHeight = fm.descent - fm.ascent;
-            float labelTop = Math.max(0f, rect.top - textHeight - (pad * 2f));
-            RectF labelBg = new RectF(
+            Paint.FontMetrics metrics = labelPaint.getFontMetrics();
+            float textHeight = metrics.descent - metrics.ascent;
+
+            float labelTop = Math.max(
+                    dp(4f),
+                    rect.top - textHeight - verticalPad * 2f - dp(4f)
+            );
+            RectF labelBounds = new RectF(
                     rect.left,
                     labelTop,
-                    Math.min(getWidth(), rect.left + textWidth + (pad * 2f)),
-                    labelTop + textHeight + (pad * 2f)
+                    Math.min(getWidth() - dp(4f), rect.left + textWidth + horizontalPad * 2f),
+                    labelTop + textHeight + verticalPad * 2f
             );
-            canvas.drawRect(labelBg, labelBackgroundPaint);
-            canvas.drawText(label, labelBg.left + pad, labelBg.bottom - pad - fm.descent, labelPaint);
+
+            labelBackgroundPaint.setColor(0xE6151A22);
+            canvas.drawRoundRect(labelBounds, dp(7f), dp(7f), labelBackgroundPaint);
+            canvas.drawText(
+                    label,
+                    labelBounds.left + horizontalPad,
+                    labelBounds.bottom - verticalPad - metrics.descent,
+                    labelPaint
+            );
         }
 
         String hud = String.format(
                 Locale.US,
-                "YOLO26n  %d  |  %.1f FPS  |  %.1f ms  |  %d objects",
+                "VP  %d  ·  %.1f FPS  ·  %.1f ms  ·  %d tracked",
                 inputSize,
                 fps,
                 inferenceMs,
                 detections.size()
         );
-        float pad = dp(6f);
-        Paint.FontMetrics hudFm = hudPaint.getFontMetrics();
-        float hudHeight = hudFm.descent - hudFm.ascent;
+
+        float padX = dp(9f);
+        float padY = dp(6f);
+        Paint.FontMetrics hudMetrics = hudPaint.getFontMetrics();
+        float hudHeight = hudMetrics.descent - hudMetrics.ascent;
         float hudWidth = hudPaint.measureText(hud);
-        RectF hudBg = new RectF(dp(8f), dp(8f), dp(8f) + hudWidth + pad * 2f, dp(8f) + hudHeight + pad * 2f);
-        canvas.drawRoundRect(hudBg, dp(5f), dp(5f), hudBackgroundPaint);
-        canvas.drawText(hud, hudBg.left + pad, hudBg.bottom - pad - hudFm.descent, hudPaint);
+
+        RectF hudBounds = new RectF(
+                dp(10f),
+                dp(10f),
+                dp(10f) + hudWidth + padX * 2f,
+                dp(10f) + hudHeight + padY * 2f
+        );
+
+        canvas.drawRoundRect(hudBounds, dp(10f), dp(10f), hudBackgroundPaint);
+        canvas.drawText(
+                hud,
+                hudBounds.left + padX,
+                hudBounds.bottom - padY - hudMetrics.descent,
+                hudPaint
+        );
     }
 
     private float dp(float value) {
