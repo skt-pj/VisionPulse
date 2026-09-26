@@ -135,6 +135,7 @@ public final class CaptureService extends Service {
                     imageReader.getSurface(), null, captureHandler);
 
             analytics = new SessionAnalytics();
+            ObjectTrackingStore.reset();
             sessionStarted = true;
             DetectionStore.setRunning(true);
             mainHandler.post(this::showOverlay);
@@ -169,6 +170,7 @@ public final class CaptureService extends Service {
         if (!processing.compareAndSet(false, true)) {
             image.close();
             if (analytics != null) analytics.recordDroppedFrame();
+            ObjectTrackingStore.recordDroppedFrame();
             return;
         }
 
@@ -189,12 +191,13 @@ public final class CaptureService extends Service {
                 float threshold = DetectionStore.getConfidenceThreshold();
                 YoloDetector.Result result = detector.detect(frame, inputSize, threshold);
                 updateRuntime(result);
+                List<ObjectTrackingStore.TrackedDetection> trackedDetections =
+                        ObjectTrackingStore.update(result.detections, lastFps, result.pipelineMs);
 
-                List<YoloDetector.Detection> overlayDetections = new ArrayList<>(result.detections);
                 mainHandler.post(() -> {
                     if (overlayView != null) {
-                        overlayView.updateDetections(
-                                overlayDetections, captureWidth, captureHeight,
+                        overlayView.updateTrackedDetections(
+                                trackedDetections, captureWidth, captureHeight,
                                 lastFps, result.inferenceMs, inputSize);
                     }
                 });
@@ -301,6 +304,10 @@ public final class CaptureService extends Service {
             finalAnalytics = analytics.snapshot(
                     DetectionStore.getInputSize(), DetectionStore.getConfidenceThreshold(), true);
             SessionHistory.save(getApplicationContext(), finalAnalytics);
+
+            ObjectTrackingStore.Snapshot trackingSnapshot = ObjectTrackingStore.finish(
+                    DetectionStore.getInputSize(), DetectionStore.getConfidenceThreshold());
+            ObjectSessionHistory.save(getApplicationContext(), trackingSnapshot);
             finalSnapshotSaved = true;
         }
 
