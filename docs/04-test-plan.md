@@ -1,12 +1,13 @@
-# Test plan v0.1.0
+# Test plan v0.1.1
 
-- TEST-01 / REQ-10: CI unit test and debug APK build complete successfully.
-- TEST-02 / REQ-09: CI verifies a non-empty generated `yolo26n.onnx` before Android build.
-- TEST-03 / REQ-01,08: Manual device test: grant projection, switch to another app, confirm frame count continues increasing.
-- TEST-04 / REQ-03: Manual device test: change 320/416/512/640 while running and confirm dashboard input size changes without restarting.
-- TEST-05 / REQ-04: Manual device test: change confidence threshold and confirm detections respond.
-- TEST-06 / REQ-05: Manual device test: confirm all timing/FPS metrics update.
-- TEST-07 / REQ-06,07: Manual device test: confirm preview boxes correspond to visible objects and label counters update.
-- TEST-08: Stop capture and confirm foreground notification/capture stop.
+- TEST-01 / REQ-12: CI unit test and debug APK build complete successfully.
+- TEST-02 / REQ-11: CI verifies a non-empty generated yolo26n.onnx before Android build.
+- TEST-03 / REQ-03: Manual device test: display known COCO objects and confirm boxes, labels, and confidence are drawn directly over them on screen.
+- TEST-04 / REQ-04,10: Manual device test: switch to another app while Live Mode runs; confirm overlay remains visible and underlying app touch input still works.
+- TEST-05 / REQ-05: Confirm overlay HUD updates FPS, inference ms, input size, and object count.
+- TEST-06 / REQ-06: Change 320/416/512/640 while running and confirm live overlay continues without restart.
+- TEST-07 / REQ-07: Change confidence threshold and confirm visible detections change accordingly.
+- TEST-08 / REQ-08,09: Confirm dashboard timing and per-label metrics continue updating.
+- TEST-09: Stop Live Mode and confirm overlay, MediaProjection, and foreground notification disappear.
 
-Real-device performance and detection correctness are not asserted by CI and require device evidence.
+Real-device visual alignment, performance, and correctness require device evidence and are not asserted by CI.

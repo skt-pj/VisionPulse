@@ -1,9 +1,11 @@
-# Detailed design v0.1.0
+# Detailed design v0.1.1
 
-Capture uses an RGBA_8888 ImageReader at the device display size. Only one inference is allowed in flight; when inference is busy, newer frames replace queued work through `acquireLatestImage`, preventing an unbounded backlog.
+Live Mode data path:
 
-Preprocessing letterboxes the screen bitmap into the selected square input using RGB float32 NCHW normalized to 0..1. Inference runs on a single executor with ONNX Runtime. The expected output is `(1,300,6)`. Rows below the current confidence threshold are dropped. Coordinates are mapped from letterbox coordinates to original screen coordinates.
+MediaProjection -> ImageReader -> bitmap -> letterbox preprocessing -> YOLO26n ONNX -> detections -> full-screen transparent overlay.
 
-The preview is rendered at up to 720 px width with detection boxes. Statistics are cumulative for the current service session. FPS is measured from completed inference frames in one-second windows.
+The overlay is a TYPE_APPLICATION_OVERLAY window. It is non-focusable and non-touchable so the underlying app remains fully operable. Detection coordinates are mapped from the captured screen coordinate system to overlay view coordinates. Each detection renders a box, COCO class label, and confidence. A compact HUD renders input size, processed FPS, inference latency, and current detection count.
 
-State transitions: STOPPED -> user consent -> MODEL_LOADING -> RUNNING -> STOPPED. MediaProjection system revocation also transitions to STOPPED.
+Only one inference is allowed in flight. acquireLatestImage is used so stale frames are discarded rather than queued. Input resolution can change live between 320/416/512/640 without restarting MediaProjection.
+
+The dashboard remains secondary and provides detailed timing plus cumulative per-label statistics. The primary acceptance path is visual: open arbitrary content, start Live Mode, switch to another app, and confirm boxes/labels follow detected objects on the actual screen.

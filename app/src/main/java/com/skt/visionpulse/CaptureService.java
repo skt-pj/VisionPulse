@@ -19,7 +19,10 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.provider.Settings;
 import android.util.DisplayMetrics;
+import android.view.Gravity;
+import android.view.WindowManager;
 
 import androidx.annotation.Nullable;
 
@@ -45,6 +48,7 @@ public final class CaptureService extends Service {
     private final AtomicBoolean processing = new AtomicBoolean(false);
     private final ExecutorService inferenceExecutor = Executors.newSingleThreadExecutor();
     private final Map<Integer, LabelStats> cumulativeStats = new HashMap<>();
+    private final Handler mainHandler = new Handler(android.os.Looper.getMainLooper());
 
     private HandlerThread captureThread;
     private Handler captureHandler;
@@ -52,6 +56,10 @@ public final class CaptureService extends Service {
     private VirtualDisplay virtualDisplay;
     private ImageReader imageReader;
     private YoloDetector detector;
+    private WindowManager windowManager;
+    private DetectionOverlayView overlayView;
+    private int captureWidth;
+    private int captureHeight;
     private long frameCount;
     private long fpsWindowStartNs;
     private int fpsWindowFrames;
@@ -76,6 +84,12 @@ public final class CaptureService extends Service {
             return START_NOT_STICKY;
         }
         if (!ACTION_START.equals(action)) return START_NOT_STICKY;
+
+        if (!Settings.canDrawOverlays(this)) {
+            publishError("オーバーレイ権限がありません");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
         startForeground(NOTIFICATION_ID, createNotification("YOLO26nを準備中"));
         int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED);
@@ -117,22 +131,24 @@ public final class CaptureService extends Service {
             }, captureHandler);
 
             DisplayMetrics metrics = getResources().getDisplayMetrics();
-            int width = metrics.widthPixels;
-            int height = metrics.heightPixels;
+            captureWidth = metrics.widthPixels;
+            captureHeight = metrics.heightPixels;
             int density = metrics.densityDpi;
 
-            imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
+            imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 2);
             imageReader.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
             virtualDisplay = projection.createVirtualDisplay(
                     "VisionPulseScreen",
-                    width,
-                    height,
+                    captureWidth,
+                    captureHeight,
                     density,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                     imageReader.getSurface(),
                     null,
                     captureHandler
             );
+
+            mainHandler.post(this::showOverlay);
             DetectionStore.setRunning(true);
             DetectionStore.publish(new DetectionStore.DetectionSnapshot(
                     "ライブ検出中", 0, DetectionStore.getInputSize(), 0, 0,
@@ -143,6 +159,26 @@ public final class CaptureService extends Service {
             publishError("画面キャプチャ開始失敗: " + e.getClass().getSimpleName());
             stopSelf();
         }
+    }
+
+    private void showOverlay() {
+        if (overlayView != null) return;
+        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        overlayView = new DetectionOverlayView(this);
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                Build.VERSION.SDK_INT >= 26
+                        ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                        : WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
+        );
+        params.gravity = Gravity.TOP | Gravity.START;
+        windowManager.addView(overlayView, params);
     }
 
     private void onImageAvailable(ImageReader reader) {
@@ -170,6 +206,19 @@ public final class CaptureService extends Service {
                 float threshold = DetectionStore.getConfidenceThreshold();
                 YoloDetector.Result result = detector.detect(frame, inputSize, threshold);
                 updateStats(inputSize, result);
+                List<YoloDetector.Detection> overlayDetections = new ArrayList<>(result.detections);
+                mainHandler.post(() -> {
+                    if (overlayView != null) {
+                        overlayView.updateDetections(
+                                overlayDetections,
+                                captureWidth,
+                                captureHeight,
+                                lastFps,
+                                result.inferenceMs,
+                                inputSize
+                        );
+                    }
+                });
             } catch (Throwable t) {
                 publishError("推論失敗: " + t.getClass().getSimpleName());
             } finally {
@@ -248,17 +297,8 @@ public final class CaptureService extends Service {
 
     private void publishError(String message) {
         DetectionStore.publish(new DetectionStore.DetectionSnapshot(
-                message,
-                0,
-                DetectionStore.getInputSize(),
-                frameCount,
-                0,
-                0,
-                0,
-                0,
-                0,
-                null,
-                new ArrayList<>()
+                message, 0, DetectionStore.getInputSize(), frameCount, 0,
+                0, 0, 0, 0, null, new ArrayList<>()
         ));
     }
 
@@ -294,6 +334,16 @@ public final class CaptureService extends Service {
     @Override
     public void onDestroy() {
         DetectionStore.setRunning(false);
+        mainHandler.post(() -> {
+            if (overlayView != null && windowManager != null) {
+                try {
+                    windowManager.removeView(overlayView);
+                } catch (Exception ignored) {
+                }
+            }
+            overlayView = null;
+            windowManager = null;
+        });
         if (imageReader != null) {
             imageReader.setOnImageAvailableListener(null, null);
             imageReader.close();
@@ -321,17 +371,8 @@ public final class CaptureService extends Service {
         }
         DetectionStore.DetectionSnapshot current = DetectionStore.getSnapshot();
         DetectionStore.publish(new DetectionStore.DetectionSnapshot(
-                "停止中",
-                0,
-                DetectionStore.getInputSize(),
-                frameCount,
-                0,
-                0,
-                0,
-                0,
-                0,
-                current.preview,
-                current.metrics
+                "停止中", 0, DetectionStore.getInputSize(), frameCount, 0,
+                0, 0, 0, 0, current.preview, current.metrics
         ));
         super.onDestroy();
     }

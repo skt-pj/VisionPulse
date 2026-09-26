@@ -5,12 +5,14 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Typeface;
 import android.media.projection.MediaProjectionManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.graphics.Typeface;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -41,6 +43,9 @@ public final class MainActivity extends AppCompatActivity {
     private ImageView previewImage;
     private Button startStopButton;
 
+    private ActivityResultLauncher<Intent> captureLauncher;
+    private ActivityResultLauncher<Intent> overlayPermissionLauncher;
+
     private final Runnable refreshTask = new Runnable() {
         @Override
         public void run() {
@@ -48,8 +53,6 @@ public final class MainActivity extends AppCompatActivity {
             uiHandler.postDelayed(this, 400);
         }
     };
-
-    private ActivityResultLauncher<Intent> captureLauncher;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -67,6 +70,18 @@ public final class MainActivity extends AppCompatActivity {
                             .putExtra(CaptureService.EXTRA_RESULT_CODE, result.getResultCode())
                             .putExtra(CaptureService.EXTRA_DATA, result.getData());
                     ContextCompat.startForegroundService(this, serviceIntent);
+                    statusText.setText("ライブ検出を開始しています。別アプリへ移動すると検出枠が画面上に重なります。");
+                }
+        );
+
+        overlayPermissionLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (Settings.canDrawOverlays(this)) {
+                        requestScreenCapture();
+                    } else {
+                        statusText.setText("検出結果を画面上に表示するため、オーバーレイ権限が必要です");
+                    }
                 }
         );
 
@@ -91,12 +106,30 @@ public final class MainActivity extends AppCompatActivity {
         root.addView(title);
 
         TextView description = new TextView(this);
-        description.setText("スマホ画面をライブ取得し、YOLO26nで検出性能を確認します。");
+        description.setText("ライブモードでは、スマホ画面をYOLO26nで連続解析し、検出した物体の枠・ラベル・信頼度を実際の画面上へリアルタイム表示します。");
         description.setTextSize(15);
         description.setPadding(0, dp(4), 0, dp(16));
         root.addView(description);
 
         statusText = sectionValue(root, "状態", "停止中");
+
+        startStopButton = new Button(this);
+        startStopButton.setText("ライブモード開始");
+        startStopButton.setAllCaps(false);
+        startStopButton.setOnClickListener(v -> {
+            if (DetectionStore.isRunning()) {
+                stopService(new Intent(this, CaptureService.class));
+            } else {
+                startLiveMode();
+            }
+        });
+        root.addView(startStopButton, matchWrap());
+
+        TextView liveHint = new TextView(this);
+        liveHint.setText("開始後は任意のアプリや動画へ移動してください。検出された対象に直接、枠・ラベル・信頼度が重なります。");
+        liveHint.setTextSize(13);
+        liveHint.setPadding(0, dp(6), 0, dp(10));
+        root.addView(liveHint);
 
         sectionLabel(root, "YOLO入力解像度");
         Spinner resolutionSpinner = new Spinner(this);
@@ -137,24 +170,9 @@ public final class MainActivity extends AppCompatActivity {
         });
         root.addView(thresholdSeek, matchWrap());
 
-        startStopButton = new Button(this);
-        startStopButton.setText("ライブ検出を開始");
-        startStopButton.setAllCaps(false);
-        startStopButton.setOnClickListener(v -> {
-            if (DetectionStore.isRunning()) {
-                stopService(new Intent(this, CaptureService.class));
-            } else {
-                MediaProjectionManager manager = (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-                captureLauncher.launch(manager.createScreenCaptureIntent());
-            }
-        });
-        LinearLayout.LayoutParams buttonParams = matchWrap();
-        buttonParams.topMargin = dp(14);
-        root.addView(startStopButton, buttonParams);
-
         performanceText = sectionValue(root, "パフォーマンス", "未実行");
 
-        sectionLabel(root, "検出プレビュー");
+        sectionLabel(root, "確認用プレビュー");
         previewImage = new ImageView(this);
         previewImage.setAdjustViewBounds(true);
         previewImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
@@ -167,13 +185,25 @@ public final class MainActivity extends AppCompatActivity {
         labelsText = sectionValue(root, "ラベル統計", "まだ検出されていません");
         labelsText.setTypeface(Typeface.MONOSPACE);
         labelsText.setTextSize(12);
-
-        TextView note = new TextView(this);
-        note.setText("精度確認はプレビューの検出枠と信頼度を見て手動評価します。厳密なmAP等には正解ラベル付きデータが必要です。");
-        note.setTextSize(12);
-        note.setPadding(0, dp(12), 0, 0);
-        root.addView(note);
         return scrollView;
+    }
+
+    private void startLiveMode() {
+        if (!Settings.canDrawOverlays(this)) {
+            Intent intent = new Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName())
+            );
+            overlayPermissionLauncher.launch(intent);
+            return;
+        }
+        requestScreenCapture();
+    }
+
+    private void requestScreenCapture() {
+        MediaProjectionManager manager =
+                (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+        captureLauncher.launch(manager.createScreenCaptureIntent());
     }
 
     private TextView sectionLabel(LinearLayout root, String text) {
@@ -199,7 +229,7 @@ public final class MainActivity extends AppCompatActivity {
     private void renderSnapshot() {
         DetectionStore.DetectionSnapshot snapshot = DetectionStore.getSnapshot();
         statusText.setText(snapshot.status);
-        startStopButton.setText(DetectionStore.isRunning() ? "停止" : "ライブ検出を開始");
+        startStopButton.setText(DetectionStore.isRunning() ? "ライブモード停止" : "ライブモード開始");
         performanceText.setText(String.format(
                 Locale.US,
                 "入力: %d×%d\n処理FPS: %.1f\n推論: %.1f ms\n前処理: %.1f ms\n後処理: %.1f ms\n合計: %.1f ms\n処理フレーム: %d\n現在の検出数: %d",
@@ -242,7 +272,8 @@ public final class MainActivity extends AppCompatActivity {
 
     private void requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33
-                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 41);
         }
     }
