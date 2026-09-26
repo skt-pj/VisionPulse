@@ -48,18 +48,37 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
+      - name: Restore common signing key
+        run: |
+          mkdir -p ci
+          curl -fsSL https://raw.githubusercontent.com/skt-pj/2048TD/main/ci/2048td-release.jks.b64 -o ci/skt-common-signing.jks.b64
+          base64 --decode ci/skt-common-signing.jks.b64 > ci/skt-common-signing.jks
+          test -s ci/skt-common-signing.jks
+
+      - name: Validate version metadata
+        run: |
+          source version.properties
+          test "$VERSION_NAME" = "0.1.2"
+          test "$VERSION_CODE" = "3"
+
       - name: Build and test
         run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
 
-      - name: Collect verification evidence
+      - name: Verify common signing and collect evidence
         run: |
           source version.properties
           mkdir -p artifact
-          APK_NAME="VisionPulse-v${VERSION_NAME}-debug.apk"
+          APK_NAME="VisionPulse-v${VERSION_NAME}-common.apk"
           cp app/build/outputs/apk/debug/app-debug.apk "artifact/${APK_NAME}"
           sha256sum "artifact/${APK_NAME}" | tee "artifact/${APK_NAME}.sha256"
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
           "$APKSIGNER" verify --verbose --print-certs "artifact/${APK_NAME}" | tee artifact/signing-certificate.txt
+          EXPECTED="E6:48:32:00:71:B8:AB:0D:E0:38:F7:67:90:06:4B:99:46:1B:67:D7:DB:E7:CE:75:06:D1:2A:5F:4F:A8:84:D8"
+          ACTUAL=$("$APKSIGNER" verify --print-certs "artifact/${APK_NAME}" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | tr '[:lower:]' '[:upper:]')
+          ACTUAL_COLON=$(echo "$ACTUAL" | sed 's/../&:/g;s/:$//')
+          echo "expected_signer_sha256=$EXPECTED" | tee artifact/signing-verification.txt
+          echo "actual_signer_sha256=$ACTUAL_COLON" | tee -a artifact/signing-verification.txt
+          test "$ACTUAL_COLON" = "$EXPECTED"
           cat > artifact/build-metadata.txt <<META
           repository=${{ github.repository }}
           branch=${{ github.ref_name }}
@@ -68,11 +87,13 @@ jobs:
           versionName=${VERSION_NAME}
           versionCode=${VERSION_CODE}
           build=:app:testDebugUnitTest :app:assembleDebug
+          signingConfig=commonStable
+          signerSha256=${ACTUAL_COLON}
           model=yolo26n.pt -> ONNX dynamic nms=False
           META
 
       - uses: actions/upload-artifact@v4
         with:
-          name: VisionPulse-v0.1.1-debug
+          name: VisionPulse-v0.1.2-common
           path: artifact/
           if-no-files-found: error
