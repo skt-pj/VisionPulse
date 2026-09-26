@@ -1,0 +1,51 @@
+import java.util.Properties
+
+plugins {
+    id 'com.android.application'
+}
+
+def versionProps = new Properties()
+file('../version.properties').withInputStream { versionProps.load(it) }
+
+android {
+    namespace 'com.skt.visionpulse'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.skt.visionpulse'
+        minSdk 26
+        targetSdk 35
+        versionCode versionProps['VERSION_CODE'].toInteger()
+        versionName versionProps['VERSION_NAME']
+
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        resources {
+            excludes += ['/META-INF/{AL2.0,LGPL2.1}']
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.core:core:1.15.0'
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.22.0'
+    testImplementation 'junit:junit:4.13.2'
+}
