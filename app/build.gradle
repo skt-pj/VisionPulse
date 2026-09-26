@@ -11,7 +11,7 @@ file('../version.properties').withInputStream { versionProps.load(it) }
 
 android {
     namespace 'com.skt.visionpulse'
-    compileSdk 35
+    compileSdk 36
 
     signingConfigs {
         commonStable {
